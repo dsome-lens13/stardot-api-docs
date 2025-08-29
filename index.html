@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>StarDot API</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist/swagger-ui.css">
+  <style>
+    body{background:#0b0f17;color:#e6e7ea;font-family:"Poppins",system-ui;font-weight:300;margin:0}
+    .swagger-ui .topbar{background:#111417}
+    .swagger-ui .info .title{font-weight:600}
+    .swagger-ui .opblock{background:#111417;color:#e6e7ea;border-color:#1a1f26}
+    .swagger-ui .opblock-summary{background:#0f1318;color:#e6e7ea}
+    .swagger-ui .opblock .opblock-summary-method{background:#e6b657;color:#111}
+    .swagger-ui .btn{background:#1a1f26;border-color:#1a1f26;color:#e6e7ea}
+    .swagger-ui .btn:hover{border-color:#e6b657;color:#e6b657}
+    .swagger-ui .tab li.active{border-color:#e6b657}
+    a{color:#e6b657}a:hover{color:#d99a2b}
+  </style>
+</head>
+<body>
+  <div id="swagger"></div>
+  <script src="https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js"></script>
+  <script>SwaggerUIBundle({ url: 'openapi.yaml', dom_id: '#swagger' });</script>
+</body>
+</html>

@@ -1,0 +1,59 @@
+openapi: 3.0.3
+info:
+  title: StarDot API
+  version: 0.1.0
+  description: Endpoints for contract validation and runtime enforcement.
+servers:
+  - url: https://api.stardot.ai
+paths:
+  /contracts/validate:
+    post:
+      summary: Validate a StarDot contract
+      description: Checks JSON schema and rule integrity; returns warnings/errors.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: The StarDot contract JSON
+      responses:
+        '200':
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid: { type: boolean }
+                  warnings: { type: array, items: { type: string } }
+                  errors: { type: array, items: { type: string } }
+  /contracts/enforce:
+    post:
+      summary: Dry-run enforcement against a sample request
+      description: Applies allow/deny fields, redaction, and stop conditions in simulation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                contract: { type: object, description: StarDot contract JSON }
+                request:
+                  type: object
+                  properties:
+                    method: { type: string, example: POST }
+                    path: { type: string, example: /v1/instruments/import }
+                    body: { type: object }
+      responses:
+        '200':
+          description: Dry-run result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  allowed: { type: boolean }
+                  redactedBody: { type: object }
+                  stopReason: { type: string, nullable: true }
