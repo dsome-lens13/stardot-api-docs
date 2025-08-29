@@ -1,59 +1,487 @@
 openapi: 3.0.3
 info:
   title: StarDot API
-  version: 0.1.0
-  description: Endpoints for contract validation and runtime enforcement.
+  version: 0.2.0
+  description: |
+    StarDot = a contract layer that governs how LLMs/agents call your APIs.
+    This API provides **validation** and **dry-run enforcement** for StarDot contracts,
+    plus a lightweight **Contract Registry** and **Metrics** (for showback/chargeback).
+
+    Core principles: Access, Predictability, Safety, Efficiency, Trust.
+    - Deterministic I/O via strict schemas and canonical errors
+    - Guardrails: auth, privacy/redaction, allowed endpoints/tools, rate limits
+    - Reasoning budgets: token/latency caps and safe-stop rules
+    - Observability: trace IDs, redaction, metrics by default
+  termsOfService: https://stardot.ai/terms
+  contact:
+    name: StarDot
+    url: https://stardot.ai
+    email: hello@stardot.ai
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
 servers:
   - url: https://api.stardot.ai
+    description: Production
+  - url: https://sandbox.api.stardot.ai
+    description: Sandbox
+
+tags:
+  - name: Contracts
+    description: Create, retrieve, validate, and manage StarDot contracts.
+  - name: Enforcement
+    description: Dry-run enforcement of a contract against a sample request.
+  - name: Metrics
+    description: Read-only usage and validation metrics.
+  - name: Health
+    description: Service health and metadata.
+
 paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      operationId: getHealth
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+
   /contracts/validate:
     post:
+      tags: [Contracts]
       summary: Validate a StarDot contract
-      description: Checks JSON schema and rule integrity; returns warnings/errors.
+      description: Checks schema, rule integrity, and best-practice lint rules.
+      operationId: validateContract
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              description: The StarDot contract JSON
+            schema: { $ref: '#/components/schemas/StarDotContract' }
+            examples:
+              instrumentImport:
+                summary: Instrument import contract
+                value:
+                  name: instrument_import
+                  version: "1.0.0"
+                  allowedEndpoints: ["POST /v1/instruments/import"]
+                  allowedFields: ["instrument_id","type","acquired_at"]
+                  disallowedFields: ["patient_name","ssn","dob"]
+                  confidenceThreshold: 0.9
+                  stopConditions: ["low_confidence","invalid_field"]
+                  redact:
+                    - path: "$.ssn"
+                    - path: "$.dob"
+                  observability:
+                    metrics: ["call_count","error_rate"]
+                    trace: true
+                  businessRules:
+                    maxRetries: 2
+                    businessHours: { start: "09:00", end: "17:00", timezone: "America/New_York" }
       responses:
         '200':
           description: Validation result
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  valid: { type: boolean }
-                  warnings: { type: array, items: { type: string } }
-                  errors: { type: array, items: { type: string } }
+              schema: { $ref: '#/components/schemas/ValidationResult' }
+        '400':
+          description: Malformed payload
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
   /contracts/enforce:
     post:
-      summary: Dry-run enforcement against a sample request
-      description: Applies allow/deny fields, redaction, and stop conditions in simulation.
+      tags: [Enforcement]
+      summary: Dry-run enforcement (no side effects)
+      description: |
+        Applies allow/deny, redaction, confidence/stop rules, and observability gates
+        to a **sample request**. This endpoint **does not call your backend**; it simulates
+        what the gateway would allow/deny and how payloads are redacted.
+      operationId: enforceContract
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              properties:
-                contract: { type: object, description: StarDot contract JSON }
-                request:
-                  type: object
-                  properties:
-                    method: { type: string, example: POST }
-                    path: { type: string, example: /v1/instruments/import }
-                    body: { type: object }
+            schema: { $ref: '#/components/schemas/EnforcementRequest' }
+            examples:
+              importDryRun:
+                value:
+                  contract:
+                    name: instrument_import
+                    allowedEndpoints: ["POST /v1/instruments/import"]
+                    disallowedFields: ["patient_name","ssn","dob"]
+                    confidenceThreshold: 0.9
+                    redact: [{ path: "$.ssn" }, { path: "$.dob" }]
+                    stopConditions: ["low_confidence","invalid_field"]
+                  request:
+                    method: POST
+                    path: /v1/instruments/import
+                    headers: { "x-trace-id": "abc123" }
+                    body:
+                      instrument_id: "X-42"
+                      type: "hematology"
+                      patient_name: "John Doe"
+                      ssn: "123-45-6789"
+                      confidence: 0.86
       responses:
         '200':
           description: Dry-run result
           content:
             application/json:
+              schema: { $ref: '#/components/schemas/EnforcementResult' }
+        '400':
+          description: Malformed payload
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /contracts:
+    post:
+      tags: [Contracts]
+      summary: Create or update a contract (idempotent by name+version)
+      operationId: upsertContract
+      security: [{ ApiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContractRecord' }
+      responses:
+        '200':
+          description: Upserted
+          content: { application/json: { schema: { $ref: '#/components/schemas/ContractRecord' } } }
+        '400': { description: Bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Problem' } } } }
+        '401': { description: Unauthorized }
+    get:
+      tags: [Contracts]
+      summary: List contracts
+      operationId: listContracts
+      parameters:
+        - $ref: '#/components/parameters/q'
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/offset'
+      responses:
+        '200':
+          description: List
+          content:
+            application/json:
               schema:
                 type: object
                 properties:
-                  allowed: { type: boolean }
-                  redactedBody: { type: object }
-                  stopReason: { type: string, nullable: true }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ContractRecord' }
+                  total: { type: integer }
+                  nextOffset: { type: integer, nullable: true }
+
+  /contracts/{name}/{version}:
+    get:
+      tags: [Contracts]
+      summary: Get a contract by name/version
+      operationId: getContract
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+        - name: version
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ContractRecord' } } } }
+        '404': { description: Not found }
+
+    delete:
+      tags: [Contracts]
+      summary: Delete a contract (soft delete recommended)
+      operationId: deleteContract
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+        - name: version
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Deleted }
+        '404': { description: Not found }
+
+  /metrics/validation:
+    get:
+      tags: [Metrics]
+      summary: Validation counts by day
+      operationId: getValidationMetrics
+      parameters:
+        - $ref: '#/components/parameters/start'
+        - $ref: '#/components/parameters/end'
+        - $ref: '#/components/parameters/contractName'
+      responses:
+        '200':
+          description: Time series
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  series:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date: { type: string, format: date }
+                        valid: { type: integer }
+                        warnings: { type: integer }
+                        errors: { type: integer }
+
+  /metrics/enforcement:
+    get:
+      tags: [Metrics]
+      summary: Enforcement outcomes by day
+      operationId: getEnforcementMetrics
+      parameters:
+        - $ref: '#/components/parameters/start'
+        - $ref: '#/components/parameters/end'
+        - $ref: '#/components/parameters/contractName'
+      responses:
+        '200':
+          description: Time series
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  series:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date: { type: string, format: date }
+                        allowed: { type: integer }
+                        denied: { type: integer }
+                        stopped: { type: integer }
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.stardot.ai/oauth/token
+          scopes:
+            contracts:full: CRUD and validation
+            enforce:dryrun: Perform dry-run enforcement
+            metrics:read: Read usage metrics
+
+  parameters:
+    q:
+      name: q
+      in: query
+      required: false
+      description: Search by name, tags, or fields
+      schema: { type: string }
+    limit:
+      name: limit
+      in: query
+      schema: { type: integer, default: 25, minimum: 1, maximum: 200 }
+    offset:
+      name: offset
+      in: query
+      schema: { type: integer, default: 0, minimum: 0 }
+    start:
+      name: start
+      in: query
+      description: Start date (YYYY-MM-DD)
+      schema: { type: string, format: date }
+    end:
+      name: end
+      in: query
+      description: End date (YYYY-MM-DD)
+      schema: { type: string, format: date }
+    contractName:
+      name: contractName
+      in: query
+      schema: { type: string }
+
+  schemas:
+    Health:
+      type: object
+      properties:
+        status: { type: string, example: ok }
+        version: { type: string }
+        time: { type: string, format: date-time }
+
+    # === Core contract ===
+    StarDotContract:
+      type: object
+      required: [name, allowedEndpoints]
+      properties:
+        name: { type: string, description: Unique contract name }
+        version: { type: string, example: "1.0.0" }
+        description: { type: string }
+        allowedEndpoints:
+          type: array
+          items: { type: string, example: "POST /v1/instruments/import" }
+        allowedFields:
+          type: array
+          items: { type: string }
+        disallowedFields:
+          type: array
+          items: { type: string }
+        redact:
+          type: array
+          description: JSONPath locations to redact in logs/telemetry
+          items: { $ref: '#/components/schemas/RedactionRule' }
+        confidenceThreshold:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: "If provided and request.confidence < threshold → stop"
+        stopConditions:
+          type: array
+          items: { type: string, enum: [low_confidence, invalid_field, outside_business_hours, max_retries_exceeded, forbidden_endpoint] }
+        observability:
+          $ref: '#/components/schemas/Observability'
+        businessRules:
+          $ref: '#/components/schemas/BusinessRules'
+        extensions:
+          type: object
+          additionalProperties: true
+          description: Vendor-specific extensions (e.g., x-stardot-*)
+
+    RedactionRule:
+      type: object
+      properties:
+        path: { type: string, example: "$.ssn" }
+        strategy:
+          type: string
+          enum: [mask, remove, hash]
+          default: mask
+
+    Observability:
+      type: object
+      properties:
+        metrics:
+          type: array
+          items: { type: string, enum: [call_count, error_rate, latency_p50, latency_p95, denied, stopped] }
+        trace: { type: boolean, default: true }
+        logLevel: { type: string, enum: [debug, info, warn, error], default: info }
+
+    BusinessRules:
+      type: object
+      properties:
+        maxRetries: { type: integer, minimum: 0, default: 0 }
+        businessHours:
+          type: object
+          properties:
+            start: { type: string, example: "09:00" }
+            end: { type: string, example: "17:00" }
+            timezone: { type: string, example: "America/New_York" }
+
+    # === Registry record ===
+    ContractRecord:
+      type: object
+      required: [name, contract]
+      properties:
+        name: { type: string }
+        version: { type: string, example: "1.0.0" }
+        tags:
+          type: array
+          items: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        contract: { $ref: '#/components/schemas/StarDotContract' }
+
+    # === Enforcement ===
+    EnforcementRequest:
+      type: object
+      required: [contract, request]
+      properties:
+        contract: { $ref: '#/components/schemas/StarDotContract' }
+        request:
+          $ref: '#/components/schemas/SampleRequest'
+
+    SampleRequest:
+      type: object
+      required: [method, path]
+      properties:
+        method: { type: string, example: POST }
+        path: { type: string, example: /v1/instruments/import }
+        headers:
+          type: object
+          additionalProperties: { type: string }
+        body:
+          type: object
+          additionalProperties: true
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Optional agent-estimated confidence
+
+    EnforcementResult:
+      type: object
+      properties:
+        allowed: { type: boolean }
+        decision: { type: string, enum: [allowed, denied, stopped] }
+        stopReason: { type: string, nullable: true }
+        violations:
+          type: array
+          items: { $ref: '#/components/schemas/Violation' }
+        redactedBody:
+          type: object
+          additionalProperties: true
+        effectiveContractHash: { type: string, description: Content hash of the contract used }
+        traceId: { type: string }
+
+    Violation:
+      type: object
+      properties:
+        code: { type: string, example: "disallowed_field" }
+        message: { type: string }
+        path: { type: string, example: "$.patient_name" }
+        severity: { type: string, enum: [warning, error], default: error }
+
+    # === Validation ===
+    ValidationResult:
+      type: object
+      properties:
+        valid: { type: boolean }
+        warnings:
+          type: array
+          items: { $ref: '#/components/schemas/ValidationMessage' }
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/ValidationMessage' }
+        canonical:
+          type: object
+          description: Normalized version of the contract with defaults applied
+
+    ValidationMessage:
+      type: object
+      properties:
+        code: { type: string, example: "missing_allowedEndpoints" }
+        message: { type: string }
+        path: { type: string, example: "$.allowedEndpoints" }
+
+    # === Errors ===
+    Problem:
+      type: object
+      required: [title, status]
+      properties:
+        type: { type: string, example: "about:blank" }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
